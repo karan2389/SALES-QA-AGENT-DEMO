@@ -4,7 +4,7 @@ import { usePathname } from "next/navigation";
 import { PanelLeftClose, PanelLeftOpen, Phone, X } from "lucide-react";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useDataset } from "@/hooks/useDataset";
-import { buildReviewQueue } from "@/lib/reviews";
+import { queueItems } from "@/lib/reviewQueue";
 import { cn } from "@/lib/utils";
 import { MAIN_NAV, SECONDARY_NAV, type NavItem } from "./nav";
 
@@ -28,7 +28,7 @@ function NavLink({ item, collapsed, badge, onNavigate }: { item: NavItem; collap
 
 export function Sidebar({ collapsed, onToggle, mobile, onClose }: { collapsed: boolean; onToggle?: () => void; mobile?: boolean; onClose?: () => void }) {
   const { rows } = useDataset();
-  const reviewCount = buildReviewQueue(rows).filter((i) => i.priority !== "low").length;
+  const reviewCount = queueItems(rows, "flags").length + queueItems(rows, "ack").length + queueItems(rows, "type").length + queueItems(rows, "failed").length;
   const c = collapsed && !mobile;
   return (
     <aside className={cn("flex h-full flex-col border-r border-line bg-surface", c ? "w-[64px]" : "w-[236px]")} aria-label="Primary">
@@ -57,7 +57,7 @@ export function Sidebar({ collapsed, onToggle, mobile, onClose }: { collapsed: b
       <div className="border-t border-line p-3">
         {!c && (
           <div className="mb-2 rounded-md bg-warn-soft px-2.5 py-2 text-2xs leading-snug text-warn">
-            <span className="font-semibold">Prototype build.</span> Illustrative mock data — not live FlexiFunnels figures.
+            <span className="font-semibold">Prototype build.</span> Illustrative mock data — nothing here represents real FlexiFunnels performance.
           </div>
         )}
         {!mobile && (

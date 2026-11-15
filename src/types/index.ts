@@ -1,278 +1,174 @@
-/** Domain types for the FlexiFunnels Call Intelligence prototype. All data is illustrative mock data. */
+/** MRV1.0 domain types. All data is illustrative mock data. */
 
-export type Outcome = "converted" | "unsuccessful" | "follow_up" | "pending";
-export type EvaluationStatus = "processing" | "completed" | "failed" | "needs_review";
-export type ReviewStatus = "not_reviewed" | "pending_review" | "approved" | "disputed";
-export type Language = "hindi" | "english" | "hinglish";
-export type TranscriptionStatus = "completed" | "processing" | "failed";
-export type SpeakerLabel = "salesperson" | "prospect" | "uncertain";
-export type ConfidenceLabel = "high" | "medium" | "low";
-export type EvidenceKind = "strength" | "gap";
+export type CallType =
+  | "new_webinar_prospect" | "follow_up" | "renewal" | "continuation"
+  | "support_existing_customer" | "no_conversation" | "other_unclassified";
 
-export type CategoryId =
-  | "intro" | "intent" | "persona" | "goals" | "motivation" | "challenges"
-  | "solution" | "testimonials" | "objection" | "closing" | "communication" | "ethics";
+/** 0–3 numeric score, N/A (not applicable) or NE (not evaluable: insufficient evidence). */
+export type Outcome = 0 | 1 | 2 | 3 | "NA" | "NE";
+export type NumericOutcome = 0 | 1 | 2 | 3;
 
-export type DimensionId =
-  | "introduction" | "discovery" | "understanding" | "objection" | "closing" | "communication" | "ethics";
+export type ReasonCode =
+  | "call_type_not_covered" | "not_reached_before_call_end"
+  | "transcript_unreliable" | "speaker_unclear" | "recording_starts_midway" | "insufficient_evidence";
 
-export type ObjectionCategory =
-  | "financial" | "time" | "suitability" | "trust" | "decision_maker" | "consult" | "other";
+export type Speaker = "salesperson" | "prospect" | "unclear";
+export type Language = "hindi" | "english";
+export type EvidenceConfidence = "low" | "medium" | "high";
+export type CriterionReviewStatus = "pending" | "approved" | "corrected";
+export type HumanReviewStatus = "pending" | "approved" | "disputed";
+
+export type FlagId =
+  | "misleading_product_claim" | "false_earnings_promise" | "fake_urgency" | "financial_pressure"
+  | "refusal_not_respected" | "misrepresented_support" | "fabricated_social_proof"
+  | "coercive_emotional_pressure" | "unsupported_customer_fit" | "unprofessional_conduct";
+export type Severity = "low" | "medium" | "high" | "critical";
+export type FlagDecision = "pending" | "confirmed" | "dismissed";
+
+export type EvalStatus = "evaluated" | "held" | "processing" | "failed";
+export type GateStatus = "pass" | "review" | "blocked";
+export type TranscriptGateDecision =
+  | "eligible" | "incomplete_transcript" | "suspected_language_mismatch"
+  | "insufficient_speech" | "corrupted_transcript" | "requires_human_review";
 
 export interface Salesperson {
+  id: string; name: string; role: string; team: string; avatar: string; joinedOn: string;
+}
+
+export interface Quote { speaker: Speaker; start: number; end: number; segments: number[]; text: string }
+export interface AbsenceRecord { start: number; end: number; note: string }
+
+export interface CriterionEval {
   id: string;
   name: string;
-  role: string;
-  team: string;
-  /** Avatar colour key (no real photos in the prototype). */
-  avatar: string;
-  joinedOn: string;
-  email: string;
-}
-
-export interface Call {
-  id: string;
-  callyzerCallId: string;
-  salespersonId: string;
-  prospectName: string;
-  phoneNumber: string;
-  /** ISO timestamp (IST offset). */
-  callDate: string;
-  durationSeconds: number;
+  categoryId: string;
+  /** Effective outcome (after any human correction). */
   outcome: Outcome;
-  language: Language;
-  recordingAvailable: boolean;
-  evaluationStatus: EvaluationStatus;
-  reviewStatus: ReviewStatus;
+  /** Outcome produced by the engine (after flag cap). Never overwritten. */
+  modelOutcome: Outcome;
+  reasonCode?: ReasonCode;
+  evidenceConfidence: EvidenceConfidence | null;
+  quotes: Quote[];
+  absence?: AbsenceRecord;
+  explanation: string;
+  improvement?: string;
+  cap?: { flagId: FlagId; originalScore: NumericOutcome };
+  review: { status: CriterionReviewStatus; reason?: string; by?: string; at?: string };
 }
 
-export interface CategoryScore {
-  score: number;
-  /** Original model score when a manager has corrected it. */
-  originalScore?: number;
-  adjustedByManager?: boolean;
-}
-
-export interface ObjectionRecord {
-  category: ObjectionCategory;
-  handling: "well" | "partial" | "poor";
-}
-
-export interface StrengthItem {
-  category: CategoryId;
-  observation: string;
-  evidenceId: string;
-}
-
-export interface ImprovementItem {
-  category: CategoryId;
-  missed: string;
-  whyItMatters: string;
-  shouldHaveDone: string;
-  coachingAction: string;
-  evidenceId: string;
-}
-
-export interface Evaluation {
+export interface FlagItem {
   id: string;
-  callId: string;
-  overallScore: number;
-  /** Score before manager corrections (equals overallScore when none). */
-  originalOverallScore: number;
-  categoryScores: Record<CategoryId, CategoryScore>;
-  strengths: StrengthItem[];
-  improvementAreas: ImprovementItem[];
-  /** Share (0-1) of rubric checklist items for which transcript evidence was located. NOT a quality measure. */
-  evidenceCoverage: number;
-  /** Model confidence (0-1) in its own evaluation. NOT a quality measure. */
-  confidence: number;
-  confidenceLevel: ConfidenceLabel;
-  /** Checklist item id -> covered in the call. */
-  checklist: Record<string, boolean>;
-  objections: ObjectionRecord[];
-  rubricVersion: string;
-  skillVersion: string;
-  evaluatedAt: string;
+  flagId: FlagId;
+  severity: Severity;
+  interpretation: "confirmed" | "ambiguous";
+  verification: "verified" | "needs_audio_check";
+  quote: Quote;
+  explanation: string;
+  decision: FlagDecision;
+  decidedBy?: string;
+  capsCriteria: string[];
 }
 
-export interface TranscriptSegment {
-  id: string;
-  /** Seconds from call start. */
-  timestamp: number;
-  speaker: SpeakerLabel;
-  text: string;
-  speakerConfidence: number;
-  /** Rubric category this segment was tagged with by the (mock) evaluator, if any. */
-  category?: CategoryId;
+export interface Objection {
+  type: ObjectionType;
+  quote: Quote;
+  handling: string;
+  outcome: "handled_well" | "partially" | "poorly" | "unclear";
+}
+export type ObjectionType = "financial" | "time" | "suitability" | "trust" | "decision_maker" | "consult" | "other";
+
+export interface ProfileField { label: string; value: string | null; segment: number | null }
+export interface EvidenceBullet { text: string; segments: number[] }
+export interface CoachingPriority { categoryId: string; issue: string; action: string; example: string; segments: number[] }
+
+export interface CategoryResult {
+  id: string; pct: number | null; scored: number; na: number; ne: number; sum: number;
+}
+export interface ScoreSummary {
+  categories: CategoryResult[];
+  stage: { pct: number | null; provisional: boolean; ne: number; na: number; scored: number };
+  psychology: { pct: number | null; provisional: boolean; ne: number; na: number; scored: number };
+  groups: { id: string; pct: number | null }[];
 }
 
-export interface Transcript {
-  id: string;
-  callId: string;
-  language: Language;
-  segments: TranscriptSegment[];
-  transcriptionStatus: TranscriptionStatus;
-  /** Mean transcription confidence (0-1). */
-  transcriptionConfidence: number;
-}
-
-export interface Evidence {
-  id: string;
-  evaluationId: string;
-  callId: string;
-  kind: EvidenceKind;
-  category: CategoryId;
-  timestamp: number;
-  segmentId: string;
-  excerpt: string;
-  observation: string;
-  recommendation: string;
-}
-
-export type ReviewAction = "approved" | "disputed" | "note" | "score_corrected" | "marked_for_review";
-
-export interface ScoreCorrection {
-  category: CategoryId;
-  from: number;
-  to: number;
-}
-
-export interface ManagerReview {
-  id: string;
-  callId: string;
-  reviewer: string;
-  status: ReviewAction;
-  notes: string;
-  reviewedAt: string;
-  correction?: ScoreCorrection;
-}
-
-export interface CallDetail {
-  call: Call;
-  salesperson: Salesperson;
-  evaluation: Evaluation | null;
-  evidence: Evidence[];
-  transcript: Transcript | null;
-  reviews: ManagerReview[];
-}
-
-export interface Dataset {
-  calls: Call[];
-  evaluations: Evaluation[];
-  salespeople: Salesperson[];
-  transcripts: Transcript[];
-  reviews: ManagerReview[];
-}
-
-/** A call joined with the entities needed by tables and analytics. */
-export interface CallRow {
-  call: Call;
-  salesperson: Salesperson;
-  evaluation: Evaluation | null;
-  overall: number | null;
-  discovery: number | null;
-  objection: number | null;
-  closing: number | null;
-  transcriptionConfidence: number | null;
-  uncertainSegments: number;
-  /** Epoch ms of call start. */
-  ts: number;
-}
-
-export interface UpdateReviewInput {
-  callId: string;
-  action: ReviewAction;
-  notes?: string;
-  correction?: { category: CategoryId; to: number };
-  reviewer?: string;
-}
-
-export type DatePreset =
-  | "today" | "yesterday" | "last_7" | "last_30" | "this_month" | "prev_month" | "last_60" | "all" | "custom";
-
-export interface DateRangeValue {
-  preset: DatePreset;
-  /** Epoch ms, inclusive start (IST day start). */
-  from: number;
-  /** Epoch ms, inclusive end (IST day end). */
-  to: number;
-}
-
-export type Granularity = "daily" | "weekly" | "monthly";
-
-export interface TrendPoint {
-  key: string;
-  label: string;
-  avg: number | null;
-  count: number;
-}
-
-export interface KpiValue {
-  value: number;
-  /** null when there is no comparable previous period (e.g. "All time"). */
-  previous: number | null;
-  /** Delta in the metric's own unit (points for scores/rates, absolute for counts). */
-  delta: number | null;
-  sparkline: number[];
-}
-
-export interface LeaderboardEntry {
-  salesperson: Salesperson;
-  calls: number;
-  avgScore: number | null;
-  converted: number;
-  trend: number | null;
-  lowSample: boolean;
-}
-
-export interface TeamAnalytics {
-  range: DateRangeValue;
-  rows: number;
-  kpis: {
-    evaluated: KpiValue;
-    avgScore: KpiValue;
-    conversion: KpiValue;
-    needsReview: KpiValue;
-    processing: KpiValue;
+export interface Mrv1Document {
+  metadata: { rubricVersion: string; evaluator: string; evaluatedAt: string };
+  call_type: { value: CallType; confirmedBy: string | null };
+  applicability: { notApplicableCategories: string[] };
+  transcript_quality: { coverage: number; source: string; language: Language; brokenChars: number; speakerUncertain: boolean };
+  sales_stage: CriterionEval[];
+  psychology: CriterionEval[];
+  scores: ScoreSummary;
+  extras: {
+    flags: FlagItem[];
+    objections: Objection[];
+    prospect_profile: ProfileField[];
+    strengths: EvidenceBullet[];
+    missed_opportunities: EvidenceBullet[];
+    coaching_priorities: CoachingPriority[];
+    executive_summary: string;
+    final_coaching_note: string;
+    needs_human_verification: string[];
   };
-  outcomes: { outcome: Outcome; count: number }[];
-  bands: { id: string; count: number }[];
-  leaderboard: LeaderboardEntry[];
-  trends: Record<Granularity, TrendPoint[]>;
-  dimensions: { id: DimensionId; avg: number | null; previous: number | null; n: number }[];
-  weaknesses: { id: string; label: string; callsAffected: number; rate: number; n: number }[];
-  objections: { category: ObjectionCategory; count: number; well: number; partial: number; poor: number }[];
-  adherence: { categoryId: CategoryId; rate: number; n: number }[];
-  missedItems: { itemId: string; missRate: number; n: number }[];
-  recent: CallRow[];
+  human_review: { status: HumanReviewStatus; reviewer?: string; at?: string; notes: string[] };
+  validation: { adjustments: string[]; warnings: string[]; criteriaTotal: number };
 }
 
-export interface SalespersonProfile {
-  salesperson: Salesperson;
-  range: DateRangeValue;
-  totalCalls: number;
-  evaluated: number;
-  avgScore: number | null;
-  trend: number | null;
-  lowSample: boolean;
-  outcomes: { outcome: Outcome; count: number }[];
-  trendSeries: TrendPoint[];
-  categories: { id: CategoryId; avg: number; n: number }[];
-  missedItems: { itemId: string; missRate: number; n: number }[];
-  objectionGaps: { category: ObjectionCategory; poor: number; partial: number; total: number }[];
-  recent: CallRow[];
-  coaching: { category: CategoryId; avg: number; action: string; reason: string }[];
+export interface GateInfo {
+  recording: { status: GateStatus; audioSec: number; loggedSec: number };
+  transcript: { decision: TranscriptGateDecision; status: GateStatus; reason: string; brokenChars: number; coverage: number; ackBy?: string; ackAt?: string };
+  callType: { status: GateStatus };
 }
 
-export interface ReviewQueueItem {
-  callId: string;
-  salesperson: Salesperson;
+export interface CallMeta {
+  /** Callyzer call ID — the only identifier. */
+  id: string;
+  salespersonId: string;
   callDate: string;
-  reasons: ReviewReason[];
-  status: ReviewStatus;
-  evaluationStatus: EvaluationStatus;
-  priority: "high" | "medium" | "low";
+  durationSec: number;
+  language: Language;
+  callType: CallType;
+  callTypeConfirmedBy: string | null;
+  phoneMasked: string;
+  status: EvalStatus;
+  heldReason?: string;
+  gates: GateInfo;
 }
 
-export type ReviewReason =
-  | "requires_review" | "low_confidence" | "uncertain_speaker" | "failed" | "incomplete" | "disputed";
+export interface Segment { n: number; start: number; end: number; speaker: Speaker; text: string }
+export interface TranscriptData { source: string; language: Language; segments: Segment[] }
+
+export interface CallRecord { call: CallMeta; doc: Mrv1Document | null; transcript: TranscriptData | null }
+
+export type ActionKind =
+  | "confirm_call_type" | "ack_gate" | "flag_decision" | "approve" | "dispute" | "correct_criterion" | "note";
+export interface ReviewAction {
+  id: string; callId: string; at: string; by: string; kind: ActionKind; notes?: string;
+  callType?: CallType; flagId?: string; decision?: FlagDecision | "needs_audio_check";
+  criterionId?: string; from?: Outcome; to?: Outcome;
+}
+
+export interface Dataset { salespeople: Salesperson[]; records: CallRecord[]; actions: ReviewAction[] }
+
+/** A call joined with derived values for tables and analytics. */
+export interface Row {
+  rec: CallRecord;
+  call: CallMeta;
+  salesperson: Salesperson;
+  doc: Mrv1Document | null;
+  ts: number;
+  stage: number | null;
+  psych: number | null;
+  provisional: boolean;
+  flagCount: number;
+  openFlags: number;
+  topSeverity: Severity | null;
+  gate: GateStatus;
+  review: HumanReviewStatus | null;
+  c18: number | null;
+}
+
+export type DatePreset = "today" | "yesterday" | "last_7" | "last_30" | "this_month" | "prev_month" | "last_60" | "all" | "custom";
+export interface DateRangeValue { preset: DatePreset; from: number; to: number }
+export type Granularity = "daily" | "weekly" | "monthly";
+export interface TrendPoint { key: string; label: string; stage: number | null; psych: number | null; count: number }

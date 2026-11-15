@@ -1,256 +1,149 @@
-import { CATEGORIES, CATEGORY_BY_ID, CHECKLIST, DIMENSIONS, MIN_SAMPLE_SIZE, OBJECTION_CATEGORIES, WEAKNESS_PATTERNS } from "@/config/rubric";
-import { OUTCOMES, SCORE_BANDS, bandFor } from "@/config/ui";
-import type {
-  CallRow, CategoryId, Dataset, DateRangeValue, DimensionId, Evaluation, Granularity, KpiValue, LeaderboardEntry,
-  SalespersonProfile, TeamAnalytics, TrendPoint,
-} from "@/types";
-import { bucketOf, inRange, istDayStart, nextBucketStart, previousRange, rangeDays } from "./dates";
-import { reviewReasons } from "./reviews";
+import { ALL_CRITERIA, CATEGORIES, FLAGS, MIN_SAMPLE } from "@/config/mrv1";
+import { SEVERITY_ORDER } from "@/config/ui";
+import type { CallType, DateRangeValue, FlagId, Granularity, ObjectionType, ReasonCode, Row, Salesperson, TrendPoint } from "@/types";
+import { bucketOf, inRange, nextBucketStart, previousRange } from "./dates";
+import { isNumeric } from "./scoring";
 
 export const avg = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-export const round1 = (n: number) => Math.round(n * 10) / 10;
+export const inRangeRows = (rows: Row[], r: DateRangeValue) => rows.filter((x) => inRange(x.ts, r));
+export const evaluatedRows = (rows: Row[]) => rows.filter((r) => r.doc);
 
-export function dimensionScore(ev: Evaluation | null, dim: DimensionId): number | null {
-  if (!ev) return null;
-  const cats = CATEGORIES.filter((c) => c.dimension === dim);
-  return avg(cats.map((c) => ev.categoryScores[c.id].score));
-}
+const stageAvg = (rows: Row[]) => avg(rows.filter((r) => r.stage !== null).map((r) => r.stage!));
+const psychAvg = (rows: Row[]) => avg(rows.filter((r) => r.psych !== null).map((r) => r.psych!));
 
-export function buildRows(ds: Dataset): CallRow[] {
-  const sp = new Map(ds.salespeople.map((s) => [s.id, s]));
-  const ev = new Map(ds.evaluations.map((e) => [e.callId, e]));
-  const tr = new Map(ds.transcripts.map((t) => [t.callId, t]));
-  return ds.calls
-    .map((call): CallRow => {
-      const evaluation = ev.get(call.id) ?? null;
-      const t = tr.get(call.id);
-      const hasT = t && t.transcriptionStatus === "completed";
-      return {
-        call,
-        salesperson: sp.get(call.salespersonId)!,
-        evaluation,
-        overall: evaluation ? evaluation.overallScore : null,
-        discovery: dimensionScore(evaluation, "discovery"),
-        objection: evaluation ? evaluation.categoryScores.objection.score : null,
-        closing: evaluation ? evaluation.categoryScores.closing.score : null,
-        transcriptionConfidence: hasT ? t.transcriptionConfidence : null,
-        uncertainSegments: hasT ? t.segments.filter((s) => s.speaker === "uncertain").length : 0,
-        ts: new Date(call.callDate).getTime(),
-      };
-    })
-    .sort((a, b) => b.ts - a.ts);
-}
-
-export const inRangeRows = (rows: CallRow[], r: DateRangeValue) => rows.filter((x) => inRange(x.ts, r));
-const scored = (rows: CallRow[]) => rows.filter((r): r is CallRow & { overall: number } => r.overall !== null);
-export const avgOverall = (rows: CallRow[]) => avg(scored(rows).map((r) => r.overall));
-
-const sparkBuckets = (r: DateRangeValue, rows: CallRow[], n = 8) => {
-  const from = r.preset === "all" ? Math.min(...rows.map((x) => x.ts), r.to) : r.from;
-  const len = (r.to - from + 1) / n;
-  return Array.from({ length: n }, (_, i) => ({ from: from + i * len, to: from + (i + 1) * len }));
-};
-
-function kpi(rows: CallRow[], prev: CallRow[] | null, range: DateRangeValue, fn: (rows: CallRow[]) => number): KpiValue {
-  const value = fn(rows);
-  const previous = prev ? fn(prev) : null;
-  const spark = sparkBuckets(range, rows).map((b) => fn(rows.filter((x) => x.ts >= b.from && x.ts <= b.to)));
-  return { value, previous, delta: previous === null || (prev && prev.length === 0) ? null : value - previous, sparkline: spark };
-}
-
-const convRate = (rows: CallRow[]) => {
-  const decided = rows.filter((r) => r.call.outcome !== "pending");
-  return decided.length ? (decided.filter((r) => r.call.outcome === "converted").length / decided.length) * 100 : 0;
-};
-const procRate = (rows: CallRow[]) => {
-  const done = rows.filter((r) => r.call.evaluationStatus !== "processing");
-  return done.length ? (done.filter((r) => r.call.evaluationStatus !== "failed").length / done.length) * 100 : 0;
-};
-const needsReviewCount = (rows: CallRow[]) => rows.filter((r) => reviewReasons(r).includes("requires_review")).length;
-
-export function trendSeries(rows: CallRow[], range: DateRangeValue, g: Granularity): TrendPoint[] {
-  const ev = scored(inRangeRows(rows, range));
+export function trendSeries(rows: Row[], range: DateRangeValue, g: Granularity): TrendPoint[] {
+  const ev = evaluatedRows(inRangeRows(rows, range));
   const from = range.preset === "all" ? Math.min(...rows.map((r) => r.ts), range.to) : range.from;
-  const map = new Map<string, number[]>();
-  for (const r of ev) map.set(bucketOf(r.ts, g).key, [...(map.get(bucketOf(r.ts, g).key) ?? []), r.overall]);
-  const points: TrendPoint[] = [];
-  let cursor = bucketOf(from, g).start;
-  let guard = 0;
-  while (cursor <= range.to && guard++ < 400) {
-    const b = bucketOf(cursor, g);
-    const vals = map.get(b.key) ?? [];
-    points.push({ key: b.key, label: b.label, avg: vals.length ? round1(avg(vals)!) : null, count: vals.length });
-    cursor = nextBucketStart(cursor, g);
+  const map = new Map<string, Row[]>();
+  for (const r of ev) { const k = bucketOf(r.ts, g).key; map.set(k, [...(map.get(k) ?? []), r]); }
+  const out: TrendPoint[] = [];
+  let cur = bucketOf(from, g).start, guard = 0;
+  while (cur <= range.to && guard++ < 400) {
+    const b = bucketOf(cur, g);
+    const rs = map.get(b.key) ?? [];
+    out.push({ key: b.key, label: b.label, stage: rs.length ? round(stageAvg(rs)) : null, psych: rs.length ? round(psychAvg(rs)) : null, count: rs.length });
+    cur = nextBucketStart(cur, g);
   }
-  return points;
+  return out;
+}
+const round = (n: number | null) => (n === null ? null : Math.round(n * 10) / 10);
+
+export interface Kpi { value: number | null; previous: number | null; delta: number | null }
+const kpi = (cur: number | null, prev: number | null, hasPrev: boolean): Kpi => ({ value: cur, previous: hasPrev ? prev : null, delta: hasPrev && cur !== null && prev !== null ? cur - prev : null });
+
+export interface Overview {
+  evaluated: Kpi; held: Kpi; stage: Kpi; psych: Kpi; openFlags: Kpi; pendingReview: Kpi;
+  callTypes: { type: CallType; count: number }[];
+  statuses: { status: string; count: number }[];
+  histogram: { bucket: string; count: number }[];
+  salespeople: SalespersonSummary[];
+  trends: Record<Granularity, TrendPoint[]>;
+  recent: Row[];
+  provisionalShare: number | null;
 }
 
-/** Fraction-based "improvement trend": current period average minus previous period average. */
-export function trendDelta(spRows: CallRow[], range: DateRangeValue): number | null {
-  const MIN = 2;
-  if (range.preset === "all") {
-    const ev = scored(spRows).sort((a, b) => a.ts - b.ts);
-    if (ev.length < MIN * 2) return null;
-    const mid = Math.floor(ev.length / 2);
-    return avg(ev.slice(mid).map((r) => r.overall))! - avg(ev.slice(0, mid).map((r) => r.overall))!;
-  }
-  const cur = scored(inRangeRows(spRows, range));
-  const prev = scored(inRangeRows(spRows, previousRange(range)));
-  if (cur.length < MIN || prev.length < MIN) return null;
-  return avg(cur.map((r) => r.overall))! - avg(prev.map((r) => r.overall))!;
+export interface SalespersonSummary {
+  salesperson: Salesperson; calls: number; evaluated: number; stage: number | null; psych: number | null; flags: number; topSeverity: Row["topSeverity"]; neRate: number | null; lowSample: boolean;
 }
 
-const missedItems = (evals: Evaluation[]) =>
-  CHECKLIST.map((item) => {
-    const n = evals.length;
-    const missed = evals.filter((e) => !e.checklist[item.id]).length;
-    return { itemId: item.id, missRate: n ? missed / n : 0, n };
-  }).sort((a, b) => b.missRate - a.missRate);
-
-const objectionStats = (evals: Evaluation[]) =>
-  OBJECTION_CATEGORIES.map((o) => {
-    const recs = evals.flatMap((e) => e.objections).filter((x) => x.category === o.id);
-    return {
-      category: o.id,
-      count: recs.length,
-      well: recs.filter((x) => x.handling === "well").length,
-      partial: recs.filter((x) => x.handling === "partial").length,
-      poor: recs.filter((x) => x.handling === "poor").length,
-    };
-  });
-
-export function computeTeamAnalytics(ds: Dataset, range: DateRangeValue): TeamAnalytics {
-  const all = buildRows(ds);
-  const rows = inRangeRows(all, range);
-  const prevRange = range.preset === "all" ? null : previousRange(range);
-  const prev = prevRange ? inRangeRows(all, prevRange) : null;
-  const evRows = rows.filter((r) => r.evaluation);
-  const evals = evRows.map((r) => r.evaluation!);
-  const prevEv = prev ? prev.filter((r) => r.evaluation) : null;
-
-  const leaderboard: LeaderboardEntry[] = ds.salespeople.map((s) => {
-    const mine = all.filter((r) => r.salesperson.id === s.id);
-    const inR = inRangeRows(mine, range);
-    const sc = scored(inR);
-    return {
-      salesperson: s,
-      calls: sc.length,
-      avgScore: avgOverall(inR),
-      converted: inR.filter((r) => r.call.outcome === "converted").length,
-      trend: trendDelta(mine, range),
-      lowSample: sc.length < MIN_SAMPLE_SIZE,
-    };
-  });
-
-  return {
-    range,
-    rows: rows.length,
-    kpis: {
-      evaluated: kpi(evRows, prevEv, range, (x) => x.length),
-      avgScore: kpi(evRows, prevEv, range, (x) => round1(avgOverall(x) ?? 0)),
-      conversion: kpi(rows, prev, range, (x) => round1(convRate(x))),
-      needsReview: kpi(rows, prev, range, needsReviewCount),
-      processing: kpi(rows, prev, range, (x) => round1(procRate(x))),
-    },
-    outcomes: OUTCOMES.map((o) => ({ outcome: o.id, count: rows.filter((r) => r.call.outcome === o.id).length })),
-    bands: SCORE_BANDS.map((b) => ({ id: b.id, count: evRows.filter((r) => bandFor(r.overall!).id === b.id).length })),
-    leaderboard,
-    trends: {
-      daily: trendSeries(all, range, "daily"),
-      weekly: trendSeries(all, range, "weekly"),
-      monthly: trendSeries(all, range, "monthly"),
-    },
-    dimensions: DIMENSIONS.map((d) => {
-      const cur = evRows.map((r) => dimensionScore(r.evaluation, d.id)!);
-      const pv = prevEv ? prevEv.map((r) => dimensionScore(r.evaluation, d.id)!) : [];
-      return { id: d.id, avg: avg(cur), previous: avg(pv), n: cur.length };
-    }),
-    weaknesses: WEAKNESS_PATTERNS.map((w) => {
-      const affected = evals.filter((e) => w.itemIds.filter((i) => !e.checklist[i]).length / w.itemIds.length >= 0.5).length;
-      return { id: w.id, label: w.label, callsAffected: affected, rate: evals.length ? affected / evals.length : 0, n: evals.length };
-    }).sort((a, b) => b.rate - a.rate),
-    objections: objectionStats(evals),
-    adherence: CATEGORIES.map((c) => {
-      const items = CHECKLIST.filter((i) => i.category === c.id);
-      const total = evals.length * items.length;
-      const covered = evals.reduce((a, e) => a + items.filter((i) => e.checklist[i.id]).length, 0);
-      return { categoryId: c.id, rate: total ? covered / total : 0, n: evals.length };
-    }),
-    missedItems: missedItems(evals),
-    recent: [...evRows].sort((a, b) => b.ts - a.ts).slice(0, 8),
-  };
-}
-
-export function computeSalespersonProfile(ds: Dataset, id: string, range: DateRangeValue): SalespersonProfile | null {
-  const salesperson = ds.salespeople.find((s) => s.id === id);
-  if (!salesperson) return null;
-  const mine = buildRows(ds).filter((r) => r.salesperson.id === id);
-  const rows = inRangeRows(mine, range);
-  const evRows = scored(rows);
-  const evals = evRows.map((r) => r.evaluation!);
-  const cats = CATEGORIES.map((c) => ({ id: c.id as CategoryId, avg: avg(evals.map((e) => e.categoryScores[c.id].score)) ?? 0, n: evals.length }))
-    .filter(() => evals.length > 0)
-    .sort((a, b) => b.avg - a.avg);
-  const missed = missedItems(evals).filter((m) => m.missRate > 0);
-  const objections = objectionStats(evals).map((o) => ({ category: o.category, poor: o.poor, partial: o.partial, total: o.count }))
-    .filter((o) => o.poor + o.partial > 0).sort((a, b) => b.poor + b.partial - (a.poor + a.partial));
-  const g: Granularity = rangeDays(range) <= 14 ? "daily" : "weekly";
-  const weakest = [...cats].reverse().filter((c) => c.avg < 75).slice(0, 3);
-  return {
-    salesperson,
-    range,
-    totalCalls: rows.length,
-    evaluated: evRows.length,
-    avgScore: avgOverall(rows),
-    trend: trendDelta(mine, range),
-    lowSample: evRows.length < MIN_SAMPLE_SIZE,
-    outcomes: OUTCOMES.map((o) => ({ outcome: o.id, count: rows.filter((r) => r.call.outcome === o.id).length })),
-    trendSeries: trendSeries(mine, range, g),
-    categories: cats,
-    missedItems: missed.slice(0, 6),
-    objectionGaps: objections,
-    recent: rows.slice(0, 6),
-    coaching: weakest.map((c) => ({
-      category: c.id,
-      avg: c.avg,
-      action: CATEGORY_BY_ID[c.id].coachingAction,
-      reason: `Averages ${Math.round(c.avg)} for ${CATEGORY_BY_ID[c.id].label.toLowerCase()} across ${c.n} evaluated call${c.n === 1 ? "" : "s"}.`,
-    })),
-  };
-}
-
-export { istDayStart };
-
-export interface TeamTableRow {
-  salesperson: CallRow["salesperson"];
-  calls: number;
-  evaluated: number;
-  avgScore: number | null;
-  discovery: number | null;
-  objection: number | null;
-  closing: number | null;
-  converted: number;
-  trend: number | null;
-  lowSample: boolean;
-}
-
-/** One row per salesperson for the Sales Team table. Every average is paired with its evaluated-call count. */
-export function teamTable(rows: CallRow[], salespeople: Dataset["salespeople"], range: DateRangeValue): TeamTableRow[] {
-  return salespeople.map((s) => {
+export function summarisePeople(rows: Row[], people: Salesperson[]): SalespersonSummary[] {
+  return people.map((s) => {
     const mine = rows.filter((r) => r.salesperson.id === s.id);
-    const inR = inRangeRows(mine, range);
-    const sc = scored(inR);
+    const ev = evaluatedRows(mine);
+    const crit = ev.flatMap((r) => r.doc!.sales_stage);
     return {
-      salesperson: s,
-      calls: inR.length,
-      evaluated: sc.length,
-      avgScore: avgOverall(inR),
-      discovery: avg(sc.map((r) => r.discovery!)),
-      objection: avg(sc.map((r) => r.objection!)),
-      closing: avg(sc.map((r) => r.closing!)),
-      converted: inR.filter((r) => r.call.outcome === "converted").length,
-      trend: trendDelta(mine, range),
-      lowSample: sc.length < MIN_SAMPLE_SIZE,
+      salesperson: s, calls: mine.length, evaluated: ev.length, stage: stageAvg(ev), psych: psychAvg(ev), flags: ev.reduce((a, r) => a + r.flagCount, 0),
+      topSeverity: ev.reduce<Row["topSeverity"]>((m, r) => (r.topSeverity && (!m || SEVERITY_ORDER[r.topSeverity] > SEVERITY_ORDER[m]) ? r.topSeverity : m), null),
+      neRate: crit.length ? crit.filter((c) => c.outcome === "NE").length / crit.length : null, lowSample: ev.length < MIN_SAMPLE,
     };
   });
+}
+
+export function overview(all: Row[], people: Salesperson[], range: DateRangeValue): Overview {
+  const rows = inRangeRows(all, range);
+  const hasPrev = range.preset !== "all";
+  const prev = hasPrev ? inRangeRows(all, previousRange(range)) : [];
+  const kpis = (rs: Row[]) => ({
+    evaluated: evaluatedRows(rs).length, held: rs.filter((r) => r.call.status === "held").length, stage: stageAvg(rs), psych: psychAvg(rs),
+    openFlags: evaluatedRows(rs).reduce((a, r) => a + r.openFlags, 0), pendingReview: evaluatedRows(rs).filter((r) => r.review === "pending").length,
+  });
+  const c = kpis(rows), p = kpis(prev);
+  const ev = evaluatedRows(rows);
+  const types = new Map<CallType, number>();
+  rows.forEach((r) => types.set(r.call.callType, (types.get(r.call.callType) ?? 0) + 1));
+  const hist = Array.from({ length: 10 }, (_, i) => ({ bucket: i === 9 ? "90–100" : `${i * 10}–${i * 10 + 9}`, count: 0 }));
+  ev.forEach((r) => { if (r.stage !== null) hist[Math.min(9, Math.floor(r.stage / 10))].count++; });
+  return {
+    evaluated: kpi(c.evaluated, p.evaluated, hasPrev), held: kpi(c.held, p.held, hasPrev), stage: kpi(c.stage, p.stage, hasPrev), psych: kpi(c.psych, p.psych, hasPrev),
+    openFlags: kpi(c.openFlags, p.openFlags, hasPrev), pendingReview: kpi(c.pendingReview, p.pendingReview, hasPrev),
+    callTypes: [...types].map(([type, count]) => ({ type, count })).sort((a, b) => b.count - a.count),
+    statuses: (["evaluated", "held", "processing", "failed"] as const).map((s) => ({ status: s, count: rows.filter((r) => r.call.status === s).length })),
+    histogram: hist, salespeople: summarisePeople(rows, people),
+    trends: { daily: trendSeries(all, range, "daily"), weekly: trendSeries(all, range, "weekly"), monthly: trendSeries(all, range, "monthly") },
+    recent: evaluatedRows(rows).sort((a, b) => b.ts - a.ts).slice(0, 8),
+    provisionalShare: ev.length ? ev.filter((r) => r.provisional).length / ev.length : null,
+  };
+}
+
+export interface MissedCriterion { id: string; name: string; categoryId: string; missed: number; of: number }
+/** Criteria scoring 0–1 across evaluated calls ("n of N calls"). */
+export function missedCriteria(rows: Row[]): MissedCriterion[] {
+  const ev = evaluatedRows(rows);
+  return ALL_CRITERIA.map((k) => {
+    const cs = ev.map((r) => r.doc!.sales_stage.find((c) => c.id === k.id)!).filter((c) => isNumeric(c.outcome));
+    return { id: k.id, name: k.name, categoryId: k.categoryId, missed: cs.filter((c) => (c.outcome as number) <= 1).length, of: cs.length };
+  }).filter((m) => m.missed > 0).sort((a, b) => b.missed / b.of - a.missed / a.of || b.missed - a.missed);
+}
+
+export function categoryAverages(rows: Row[]) {
+  const ev = evaluatedRows(rows);
+  return CATEGORIES.map((c) => {
+    const ps = ev.map((r) => r.doc!.scores.categories.find((x) => x.id === c.id)!.pct).filter((p): p is number => p !== null);
+    return { id: c.id, avg: avg(ps), n: ps.length };
+  });
+}
+
+export function flagFrequency(rows: Row[]) {
+  const fl = evaluatedRows(rows).flatMap((r) => r.doc!.extras.flags);
+  return FLAGS.map((f) => ({ id: f.id as FlagId, count: fl.filter((x) => x.flagId === f.id && x.decision !== "dismissed").length, confirmed: fl.filter((x) => x.flagId === f.id && x.decision === "confirmed").length })).sort((a, b) => b.count - a.count);
+}
+
+export function objectionStats(rows: Row[]) {
+  const os = evaluatedRows(rows).flatMap((r) => r.doc!.extras.objections);
+  const types = [...new Set(os.map((o) => o.type))] as ObjectionType[];
+  return types.map((t) => ({ type: t, total: os.filter((o) => o.type === t).length, handled_well: os.filter((o) => o.type === t && o.outcome === "handled_well").length, partially: os.filter((o) => o.type === t && o.outcome === "partially").length, poorly: os.filter((o) => o.type === t && o.outcome === "poorly").length, unclear: os.filter((o) => o.type === t && o.outcome === "unclear").length })).sort((a, b) => b.total - a.total);
+}
+
+export function reasonRates(rows: Row[]) {
+  const cs = evaluatedRows(rows).flatMap((r) => r.doc!.sales_stage);
+  const count = (o: "NA" | "NE") => { const m = new Map<ReasonCode, number>(); cs.filter((c) => c.outcome === o).forEach((c) => m.set(c.reasonCode!, (m.get(c.reasonCode!) ?? 0) + 1)); return [...m].map(([code, n]) => ({ code, n })).sort((a, b) => b.n - a.n); };
+  return { total: cs.length, na: count("NA"), ne: count("NE") };
+}
+
+export function gateOutcomes(rows: Row[]) {
+  const m = new Map<string, number>();
+  rows.filter((r) => r.call.status !== "processing" && r.call.status !== "failed").forEach((r) => { const d = r.call.gates.transcript.decision; m.set(d, (m.get(d) ?? 0) + 1); });
+  return [...m].map(([decision, n]) => ({ decision, n }));
+}
+
+/** Aggregates the top recurring coaching priorities across calls. */
+export function topCoaching(rows: Row[], limit = 3) {
+  const m = new Map<string, { n: number; action: string }>();
+  evaluatedRows(rows).forEach((r) => r.doc!.extras.coaching_priorities.forEach((c) => { const e = m.get(c.categoryId) ?? { n: 0, action: c.action }; e.n++; m.set(c.categoryId, e); }));
+  return [...m].map(([categoryId, v]) => ({ categoryId, calls: v.n, action: v.action })).sort((a, b) => b.calls - a.calls).slice(0, limit);
+}
+
+export function recurringFlags(rows: Row[]) { return flagFrequency(rows).filter((f) => f.count > 0); }
+
+export function neRate(rows: Row[]) {
+  const cs = evaluatedRows(rows).flatMap((r) => r.doc!.sales_stage);
+  return cs.length ? cs.filter((c) => c.outcome === "NE").length / cs.length : null;
+}
+
+/** Weekly trend + trend claim only when enough evaluated calls. */
+export function trendClaim(rows: Row[], range: DateRangeValue): number | null {
+  const cur = evaluatedRows(inRangeRows(rows, range)), prev = evaluatedRows(inRangeRows(rows, previousRange(range)));
+  if (range.preset === "all" || cur.length < MIN_SAMPLE || prev.length < MIN_SAMPLE) return null;
+  const a = stageAvg(cur), b = stageAvg(prev);
+  return a !== null && b !== null ? a - b : null;
 }

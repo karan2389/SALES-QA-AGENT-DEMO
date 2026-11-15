@@ -51,3 +51,6 @@
 
 /* Grid children may shrink below their content width so inner tables scroll instead of widening the page. */
 main .grid > * { min-width: 0; }
+
+/* Skip rendering of off-screen list rows (cheap alternative to full virtualisation for ≤100 rows). */
+.cv-auto { content-visibility: auto; contain-intrinsic-size: auto 96px; }

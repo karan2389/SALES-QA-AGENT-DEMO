@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 type Side = "top" | "bottom" | "right";
 
-/** Lightweight portal tooltip (never clipped by overflow containers). Shows on hover and keyboard focus. */
+/** Small portal tooltip (never clipped by overflow containers). Shows on hover and keyboard focus. */
 export function Tooltip({ content, children, side = "top", className }: { content: ReactNode; children: ReactNode; side?: Side; className?: string }) {
   const id = useId();
   const ref = useRef<HTMLSpanElement>(null);

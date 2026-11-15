@@ -13,7 +13,7 @@ import { useToast } from "@/components/ui/Toast";
 import { REVIEWER_NAME, REVIEWER_ROLE } from "@/config/ui";
 import { useDataset } from "@/hooks/useDataset";
 import { useDateRange } from "@/hooks/useDateRange";
-import { REASON_LABEL, buildReviewQueue } from "@/lib/reviews";
+import { queueItems } from "@/lib/reviewQueue";
 import { formatShortDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import { getPrototypeSettings, resetMockState, setPrototypeSettings } from "@/services";
@@ -25,7 +25,7 @@ const DATE_ROUTES = ["/dashboard", "/team", "/analytics"];
 
 function Notifications() {
   const { rows } = useDataset();
-  const queue = buildReviewQueue(rows).filter((i) => i.priority !== "low");
+  const queue = ["flags", "ack", "type", "failed"].flatMap((q) => queueItems(rows, q as "flags")).filter((i, idx, arr) => arr.findIndex((x) => x.row.call.id === i.row.call.id) === idx);
   return (
     <Popover align="right" panelClassName="w-[340px]"
       trigger={({ toggle }) => (
@@ -36,21 +36,21 @@ function Notifications() {
       )}>
       {({ close }) => (
         <div>
-          <div className="border-b border-line px-3 py-2.5"><p className="text-[13px] font-semibold">Needs your attention</p><p className="text-xs text-ink-muted">Derived from current review queue</p></div>
+          <div className="border-b border-line px-3 py-2.5"><p className="text-[13px] font-semibold">Needs your attention</p><p className="text-xs text-ink-muted">Open flags, gate acknowledgements, held and failed calls</p></div>
           {queue.length === 0 ? <p className="px-3 py-6 text-center text-[13px] text-ink-muted">You&apos;re all caught up.</p> : (
             <ul className="max-h-[320px] divide-y divide-line overflow-y-auto">
               {queue.slice(0, 6).map((i) => (
-                <li key={i.callId}>
-                  <Link href={`/calls/${i.callId}`} onClick={close} className="block px-3 py-2.5 hover:bg-subtle">
-                    <div className="flex items-center justify-between gap-2"><span className="text-[13px] font-medium">{i.callId}</span>
+                <li key={i.row.call.id}>
+                  <Link href={`/calls/${i.row.call.id}`} onClick={close} className="block px-3 py-2.5 hover:bg-subtle">
+                    <div className="flex items-center justify-between gap-2"><span className="text-[13px] font-medium">{i.row.call.id}</span>
                       <Badge tone={i.priority === "high" ? "bad" : "warn"}>{i.priority}</Badge></div>
-                    <p className="mt-0.5 text-xs text-ink-muted">{i.salesperson.name} · {formatShortDate(i.callDate)} · {REASON_LABEL[i.reasons[0]]}</p>
+                    <p className="mt-0.5 text-xs text-ink-muted">{i.row.salesperson.name} · {formatShortDate(i.row.call.callDate)} · {i.reason}</p>
                   </Link>
                 </li>
               ))}
             </ul>
           )}
-          <Link href="/reviews" onClick={close} className="block border-t border-line bg-subtle px-3 py-2 text-center text-xs font-medium text-brand hover:bg-brand-soft">Open Review Centre ({queue.length})</Link>
+          <Link href="/reviews" onClick={close} className="block border-t border-line bg-subtle px-3 py-2 text-center text-xs font-medium text-brand hover:bg-brand-soft">Open Human Review ({queue.length})</Link>
         </div>
       )}
     </Popover>

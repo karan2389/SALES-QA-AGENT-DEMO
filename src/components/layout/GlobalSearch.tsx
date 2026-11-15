@@ -22,11 +22,11 @@ export function GlobalSearch() {
 
   const { results, totalCalls } = useMemo(() => {
     if (!dq) return { results: [] as Result[], totalCalls: 0 };
-    const calls = rows.filter((r) => [r.call.id, r.call.callyzerCallId, r.call.prospectName, r.call.phoneNumber, r.salesperson.name].some((s) => s.toLowerCase().includes(dq)));
+    const calls = rows.filter((r) => [r.call.id, r.salesperson.name].some((s) => s.toLowerCase().includes(dq)));
     const people = salespeople.filter((s) => s.name.toLowerCase().includes(dq) || s.team.toLowerCase().includes(dq));
     const res: Result[] = [
       ...people.slice(0, 3).map((s): Result => ({ kind: "person", id: s.id, title: s.name, sub: `${s.role} · ${s.team}`, color: s.avatar })),
-      ...calls.slice(0, 5).map((r): Result => ({ kind: "call", id: r.call.id, title: `${r.call.id} · ${r.call.prospectName}`, sub: `${r.salesperson.name} · ${formatShortDate(r.call.callDate)}` })),
+      ...calls.slice(0, 5).map((r): Result => ({ kind: "call", id: r.call.id, title: r.call.id, sub: `${r.salesperson.name} · ${formatShortDate(r.call.callDate)}` })),
     ];
     return { results: res, totalCalls: calls.length };
   }, [dq, rows, salespeople]);
@@ -56,8 +56,8 @@ export function GlobalSearch() {
     <div ref={box} className="relative w-full max-w-md">
       <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
       <input ref={input} value={q} onChange={(e) => { setQ(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onKeyDown={onKey}
-        role="combobox" aria-expanded={open && !!dq} aria-controls="global-search-list" aria-label="Search calls, prospects and salespeople"
-        placeholder="Search calls, prospects, salespeople…"
+        role="combobox" aria-expanded={open && !!dq} aria-controls="global-search-list" aria-label="Search calls and salespeople"
+        placeholder="Search call ID or salesperson…"
         className="h-9 w-full rounded-md border border-line bg-subtle pl-8 pr-12 text-sm placeholder:text-ink-muted/80 focus:border-brand focus:bg-surface focus:outline-none focus:ring-2 focus:ring-brand/20" />
       <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-line bg-surface px-1.5 text-2xs text-ink-muted sm:block">Ctrl K</kbd>
       {open && dq && (

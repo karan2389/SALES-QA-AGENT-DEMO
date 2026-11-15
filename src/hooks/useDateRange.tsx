@@ -5,7 +5,7 @@ import type { DateRangeValue } from "@/types";
 
 interface Ctx { range: DateRangeValue; setRange: (r: DateRangeValue) => void }
 const DateRangeContext = createContext<Ctx | null>(null);
-const KEY = "ffci:date-range:v1";
+const KEY = "ffci2:date-range:v1";
 
 /** Shared date range for Overview, Team, Analytics and Reviews. Persisted locally as a preference. */
 export function DateRangeProvider({ children }: { children: ReactNode }) {
